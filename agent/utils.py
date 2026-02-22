@@ -4,7 +4,22 @@ import socket
 import random
 import re
 from urllib.parse import urlparse
+import requests
 
+# ==========================================
+#  HELPER: URL UNWRAPPER
+# ==========================================
+def unwrap_google_url(google_url):
+    """
+    Bypasses the Google News redirect to get the REAL government URL.
+    """
+    try:
+        # We ping the link to see where it redirects us
+        response = requests.head(google_url, allow_redirects=True, timeout=3)
+        return response.url
+    except:
+        return google_url
+    
 # ==========================================
 #  1. NLP TONE ANALYZER (The "Scam Detector")
 # ==========================================
@@ -48,8 +63,7 @@ def verify_url_authenticity(url, title=""):
     except:
         return 0, ["Invalid URL"], ""
 
-    # --- FIX: Start with a Baseline Score ---
-    # 0 is too harsh. If it's HTTPS, we start at 50 (Neutral/Safe-ish).
+    # Start with a Baseline Score
     trust_score = 50 
     flags = []
 
@@ -63,8 +77,7 @@ def verify_url_authenticity(url, title=""):
     if any(t in domain for t in trusted_edu):
         return 90, ["Official Educational Institute"], "High Trust"
 
-    # --- LAYER 2: REPUTABLE NEWS SOURCES (New) ---
-    # We add points for known news sites so they don't look like scams
+    # --- LAYER 2: REPUTABLE NEWS SOURCES ---
     reputable_news = ['timesofindia', 'hindustantimes', 'ndtv', 'jagran', 'careers360', 'shiksha']
     if any(news in domain for news in reputable_news):
         trust_score += 30 # Bumps them to 80 (Verified)
@@ -93,16 +106,15 @@ def verify_url_authenticity(url, title=""):
     return final_score, flags, status
 
 # ==========================================
-#  3. RSS SEARCH (No Dummy Data)
+#  3. RSS SEARCH
 # ==========================================
 def search_web_for_scholarships(query):
     """
-    Real-time Google News RSS Search. 
-    NO DUMMY DATA FALLBACK.
+    Real-time Google News RSS Search with URL Unwrapping.
     """
     print(f"📡 Rudra is scanning Google News feeds for: '{query}'...")
     
-    # We add specific keywords to find better results
+    # Re-added the missing logic to define clean_query!
     official_query = f"{query} scholarship (site:.gov.in OR site:.edu.in OR application OR apply online)"
     clean_query = official_query.replace(" ", "+")
     
@@ -114,10 +126,14 @@ def search_web_for_scholarships(query):
         feed = feedparser.parse(rss_url)
 
         if feed.entries:
-            for entry in feed.entries[:9]: # Top 9 results
+            for entry in feed.entries[:8]: # Top 8 results
+                
+                # --- UNWRAP THE URL HERE ---
+                real_url = unwrap_google_url(entry.link)
+                
                 results.append({
                     'title': entry.title,
-                    'url': entry.link,
+                    'url': real_url, # Now passing the real .gov.in link
                     'source': entry.source.title if hasattr(entry, 'source') else 'Google News'
                 })
         else:
@@ -125,14 +141,7 @@ def search_web_for_scholarships(query):
 
     except Exception as e:
         print(f"❌ RSS Error: {e}")
-
-    # --- NO FALLBACK / NO SIMULATION ---
-    # If results are empty, we return empty list.
-    if not results:
-        print(f"⚠️ No results found for '{query}'.")
-        return []
         
-    print(f"✅ Found {len(results)} REAL live results.")
     return results
 
 # Placeholder to prevent import errors if your views call this
