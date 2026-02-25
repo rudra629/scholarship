@@ -11,13 +11,21 @@ import requests
 # ==========================================
 def unwrap_google_url(google_url):
     """
-    Bypasses the Google News redirect to get the REAL government URL.
+    Upgraded Unwrapper: Uses a fake Browser Identity (User-Agent) 
+    so Google doesn't block the redirect check.
     """
     try:
-        # We ping the link to see where it redirects us
-        response = requests.head(google_url, allow_redirects=True, timeout=3)
+        # Disguise the Python script as Google Chrome
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        # Use GET instead of HEAD, as Google often blocks HEAD requests
+        response = requests.get(google_url, headers=headers, allow_redirects=True, timeout=3.5)
+        
         return response.url
-    except:
+    except Exception as e:
+        print(f"⚠️ Unwrapper failed for a link: {e}")
         return google_url
     
 # ==========================================
