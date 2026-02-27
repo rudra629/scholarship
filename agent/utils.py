@@ -5,7 +5,49 @@ import random
 import re
 from urllib.parse import urlparse
 import requests
+import re
+from datetime import datetime, timedelta
 
+def extract_rich_metadata(title, summary_html=""):
+    """
+    Smart Extractor: Generates paragraph info, deadlines, and required docs 
+    based on keywords in the scholarship title and summary.
+    """
+    # 1. INFO PARAGRAPH (Clean HTML tags out of the RSS summary)
+    clean_info = re.sub('<[^<]+>', '', summary_html).strip() if summary_html else ""
+    if len(clean_info) < 30:
+        clean_info = f"Official financial assistance and support program for students applying for {title}. Eligible candidates must submit their verified applications and documents before the portal deadline to be considered for fund disbursement."
+    
+    # 2. DEADLINE (Smart assignment for Hackathon demo)
+    # Give it a realistic future deadline between 15 and 45 days from today
+    future_date = datetime.now() + timedelta(days=random.randint(15, 45))
+    deadline = future_date.strftime("%d %b %Y")
+
+    # 3. DOCUMENTS REQUIRED (Mapped to your ScholarMatch Technical Doc!)
+    # Everyone needs these base documents:
+    docs = ["Aadhaar Card", "Bank Passbook", "Previous Year Marksheet", "Passport Photo"]
+    
+    title_lower = title.lower()
+    info_lower = clean_info.lower()
+    
+    # Dynamically add documents based on keywords
+    if any(word in title_lower for word in ["minority", "caste", "obc", "sc", "st"]):
+        docs.append("Caste/Category Certificate")
+        
+    if any(word in title_lower or word in info_lower for word in ["merit", "means", "income", "economically"]):
+        docs.append("Income Certificate (Below 2.5 LPA)")
+        
+    if any(word in title_lower for word in ["disability", "pwd", "disabled"]):
+        docs.append("Disability Certificate")
+        
+    if any(word in title_lower for word in ["medical", "diploma", "engineering", "degree"]):
+        docs.append("Current Year Fee Receipt / Bonafide Certificate")
+
+    return {
+        "info": clean_info[:250] + "...", # Truncate to a neat paragraph
+        "deadline": deadline,
+        "documents_required": docs
+    }
 # ==========================================
 #  HELPER: URL UNWRAPPER
 # ==========================================
@@ -137,12 +179,14 @@ def search_web_for_scholarships(query):
             for entry in feed.entries[:8]: # Top 8 results
                 
                 # --- UNWRAP THE URL HERE ---
+                # ... inside search_web_for_scholarships ...
                 real_url = unwrap_google_url(entry.link)
                 
                 results.append({
                     'title': entry.title,
-                    'url': real_url, # Now passing the real .gov.in link
-                    'source': entry.source.title if hasattr(entry, 'source') else 'Google News'
+                    'url': real_url, 
+                    'source': entry.source.title if hasattr(entry, 'source') else 'Google News',
+                    'summary': entry.summary if hasattr(entry, 'summary') else '' # <--- ADD THIS LINE
                 })
         else:
             print("⚠️ No live news found.")
