@@ -3,7 +3,61 @@ from django.shortcuts import render
 from django.http import JsonResponse
 import urllib.parse
 from .utils import search_web_for_scholarships, verify_url_authenticity, extract_details
+from django.views.decorators.csrf import csrf_exempt
+from django.http import HttpResponse
+from twilio.twiml.messaging_response import MessagingResponse
+# Make sure verify_url_authenticity is imported from .utils
 
+@csrf_exempt  # Twilio sends POST requests without CSRF tokens, so we must exempt this view
+def whatsapp_webhook(request):
+    """
+    Listens for incoming WhatsApp messages from Twilio, scans the URL, and replies.
+    """
+    if request.method == 'POST':
+        # 1. Get the text message the user sent
+        incoming_msg = request.POST.get('Body', '').strip()
+
+        # 2. Prepare the Twilio Response object
+        twilio_resp = MessagingResponse()
+        reply_msg = twilio_resp.message()
+
+        # 3. Basic Check: Did they actually send a link?
+        if not incoming_msg.startswith('http'):
+            reply_msg.body("🤖 *AUTHIC AGENT*\nPlease send me a direct scholarship link (starting with http or https) to run a security scan.")
+            return HttpResponse(str(twilio_resp), content_type='application/xml')
+
+        # 4. Run your Trust Engine!
+        score, flags, status = verify_url_authenticity(incoming_msg, title="WhatsApp Submission")
+
+        # 5. Format a beautiful WhatsApp reply
+        flags_text = "\n- " + "\n- ".join(flags) if flags else "\n- None detected"
+        
+        if score > 60:
+            final_text = (
+                f"✅ *VERIFIED SCHOLARSHIP*\n\n"
+                f"🛡️ *Trust Score:* {score}/100\n"
+                f"📊 *Status:* Safe to Apply\n\n"
+                f"*Scan Results:*{flags_text}"
+            )
+        elif score < 30:
+            final_text = (
+                f"🚨 *SCAM DETECTED* 🚨\n\n"
+                f"🛡️ *Trust Score:* {score}/100\n"
+                f"⚠️ *Status:* HIGH RISK\n\n"
+                f"*Red Flags:*{flags_text}\n\n"
+                f"⛔ _Do NOT submit Aadhar or bank details to this site!_"
+            )
+        else:
+            final_text = (
+                f"⚠️ *CAUTION ADVISED*\n\n"
+                f"🛡️ *Trust Score:* {score}/100\n"
+                f"👀 *Status:* Suspicious\n\n"
+                f"*Scan Results:*{flags_text}"
+            )
+
+        # 6. Send the message back to the user
+        reply_msg.body(final_text)
+        return HttpResponse(str(twilio_resp), content_type='application/xml')
 def dashboard_ui(request):
     """
     Handles the initial page load AND the search results for the Web UI.

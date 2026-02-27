@@ -4,6 +4,7 @@ import json
 
 # Your clean Render URL
 BASE_URL = "https://scholarship-4pxs.onrender.com/api/verify/"
+# BASE_URL = "http://127.0.0.1:8000/api/verify/"
 
 def test_authic_agent(target_url):
     print(f"\n🚀 Sending URL to AUTHIC Agent: {target_url}")
