@@ -64,7 +64,7 @@ def extract_url_with_gemini(media_url, mime_type):
         try:
             # 4. Upload to Gemini and ask for the URL
             sample_file = genai.upload_file(path=temp_path)
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            model = genai.GenerativeModel(model_name="gemini-2.5-flash")
             
             prompt = "Extract the website link (URL) from this image. Reply ONLY with the raw URL starting with http:// or https://."
             result = model.generate_content([sample_file, prompt])
