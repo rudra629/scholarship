@@ -7,49 +7,125 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import HttpResponse
 from twilio.twiml.messaging_response import MessagingResponse
 from .utils import search_web_for_scholarships, verify_url_authenticity, extract_rich_metadata
+
+from dotenv import load_dotenv
+import os
+import re
+import tempfile
+import requests
+import google.generativeai as genai
+
+# Configure Gemini API
+# ==========================================
+# IMPORTANT: Put your actual Gemini API key here, or use os.getenv("GEMINI_API_KEY")
+load_dotenv()
+
+# 2. Grab the key securely
+gemini_key = os.getenv("GEMINI_API_KEY")
+
+# 3. Configure the AI
+if gemini_key:
+    genai.configure(api_key=gemini_key)
+else:
+    print("⚠️ WARNING: GEMINI_API_KEY is missing from your .env file!")
+
+def extract_url_with_gemini(media_url, mime_type):
+    """Downloads Twilio media, passes it to Gemini Vision, and extracts the URL."""
+    try:
+        # 1. Download the image/PDF from Twilio
+        response = requests.get(media_url)
+        
+        # 2. Save it to a temporary file based on its type
+        ext = '.pdf' if 'pdf' in mime_type else '.jpg'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
+
+        # 3. Upload to Gemini and ask for the URL
+        sample_file = genai.upload_file(path=temp_path)
+        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        
+        prompt = (
+            "You are a scholarship link extractor. Look at this image or document. "
+            "Find the website link (URL) where students can apply. "
+            "Reply ONLY with the raw URL starting with http:// or https://. "
+            "If there is no URL, reply exactly with 'NO_URL'."
+        )
+        
+        result = model.generate_content([sample_file, prompt])
+        extracted_text = result.text.strip()
+        
+        # 4. Clean up the temp file from your server
+        os.remove(temp_path)
+        
+        return extracted_text
+    except Exception as e:
+        print(f"Gemini Extraction Error: {e}")
+        return "NO_URL"
 @csrf_exempt
 def whatsapp_webhook(request):
     """
-    Listens for incoming WhatsApp messages from Twilio, scans the URL, and replies.
+    Listens for WhatsApp messages. Supports both direct text URLs 
+    and Image/PDF uploads using Gemini AI Vision.
     """
     if request.method == 'POST':
         incoming_msg = request.POST.get('Body', '').strip()
+        num_media = int(request.POST.get('NumMedia', 0))
+        
         twilio_resp = MessagingResponse()
         reply_msg = twilio_resp.message()
+        
+        target_url = None
 
-        if not incoming_msg.startswith('http'):
-            reply_msg.body("🤖 *AUTHIC AGENT*\nPlease send me a direct scholarship link (starting with http or https) to run a security scan.")
-            return HttpResponse(str(twilio_resp), content_type='application/xml')
+        # --- BRANCH A: USER SENT AN IMAGE OR PDF ---
+        if num_media > 0:
+            media_url = request.POST.get('MediaUrl0')
+            mime_type = request.POST.get('MediaContentType0')
+            
+            # Extract text using Gemini
+            extracted_text = extract_url_with_gemini(media_url, mime_type)
+            
+            # Use regex to perfectly grab the link out of the AI's response
+            url_match = re.search(r'(https?://[^\s]+)', extracted_text)
+            
+            if url_match:
+                target_url = url_match.group(1)
+            else:
+                reply_msg.body("🤖 *AUTHIC AGENT*\nI scanned your document but couldn't find a clear web address. Please ensure the image contains a valid URL starting with http/https.")
+                return HttpResponse(str(twilio_resp), content_type='application/xml')
 
-        score, flags, status = verify_url_authenticity(incoming_msg, title="WhatsApp Submission")
+        # --- BRANCH B: USER SENT A TEXT MESSAGE ---
+        else:
+            url_match = re.search(r'(https?://[^\s]+)', incoming_msg)
+            if url_match:
+                target_url = url_match.group(1)
+            else:
+                reply_msg.body("🤖 *AUTHIC AGENT*\nPlease send me a direct scholarship link or upload a screenshot/PDF of the scholarship to run a security scan.")
+                return HttpResponse(str(twilio_resp), content_type='application/xml')
+
+        # --- RUN THE TRUST ENGINE ON THE EXTRACTED URL ---
+        score, flags, status = verify_url_authenticity(target_url, title="WhatsApp Submission")
         flags_text = "\n- " + "\n- ".join(flags) if flags else "\n- None detected"
         
         if score > 60:
-            final_text = (
-                f"✅ *VERIFIED SCHOLARSHIP*\n\n"
-                f"🛡️ *Trust Score:* {score}/100\n"
-                f"📊 *Status:* Safe to Apply\n\n"
-                f"*Scan Results:*{flags_text}"
-            )
+            final_text = (f"✅ *VERIFIED SCHOLARSHIP*\n\n"
+                          f"🔗 *Detected URL:* {target_url}\n"
+                          f"🛡️ *Trust Score:* {score}/100\n"
+                          f"📊 *Status:* Safe to Apply\n\n*Scan Results:*{flags_text}")
         elif score < 30:
-            final_text = (
-                f"🚨 *SCAM DETECTED* 🚨\n\n"
-                f"🛡️ *Trust Score:* {score}/100\n"
-                f"⚠️ *Status:* HIGH RISK\n\n"
-                f"*Red Flags:*{flags_text}\n\n"
-                f"⛔ _Do NOT submit Aadhar or bank details to this site!_"
-            )
+            final_text = (f"🚨 *SCAM DETECTED* 🚨\n\n"
+                          f"🔗 *Detected URL:* {target_url}\n"
+                          f"🛡️ *Trust Score:* {score}/100\n"
+                          f"⚠️ *Status:* HIGH RISK\n\n*Red Flags:*{flags_text}\n\n"
+                          f"⛔ _Do NOT submit Aadhaar or bank details to this site!_")
         else:
-            final_text = (
-                f"⚠️ *CAUTION ADVISED*\n\n"
-                f"🛡️ *Trust Score:* {score}/100\n"
-                f"👀 *Status:* Suspicious\n\n"
-                f"*Scan Results:*{flags_text}"
-            )
+            final_text = (f"⚠️ *CAUTION ADVISED*\n\n"
+                          f"🔗 *Detected URL:* {target_url}\n"
+                          f"🛡️ *Trust Score:* {score}/100\n"
+                          f"👀 *Status:* Suspicious\n\n*Scan Results:*{flags_text}")
 
         reply_msg.body(final_text)
         return HttpResponse(str(twilio_resp), content_type='application/xml')
-
 def dashboard_ui(request):
     """
     Handles the initial page load AND the search results for the Web UI.
