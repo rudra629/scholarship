@@ -61,7 +61,7 @@ def extract_url_with_gemini(media_url, mime_type):
         try:
             # Upload to Gemini and ask for the URL
             sample_file = genai.upload_file(path=temp_path)
-            model = genai.GenerativeModel(model_name="gemini-2.5-flash") # Reverted to 1.5-flash for stability
+            model = genai.GenerativeModel(model_name="gemini-2.5-flash") # Using latest fast model
             
             prompt = "Extract the website link (URL) from this image. Reply ONLY with the raw URL starting with http:// or https://."
             result = model.generate_content([sample_file, prompt])
@@ -123,12 +123,11 @@ def whatsapp_webhook(request):
                 return HttpResponse(str(twilio_resp), content_type='application/xml')
 
         # --- RUN THE TRUST ENGINE ON THE EXTRACTED URL ---
-        # --- RUN THE TRUST ENGINE ON THE EXTRACTED URL ---
         score, flags, status = verify_url_authenticity(target_url, title="WhatsApp Submission")
         flags_text = "\n- " + "\n- ".join(flags) if flags else "\n- None detected"
         
         # 🚨 UPGRADED DB SAVING LOGIC 🚨
-        if score >= 60:  # Changed to >= 60 so your 60/100 link passes!
+        if score >= 60:  
             # It's a verified link! Extract details and save it to the DB
             metadata = extract_rich_metadata("WhatsApp Scholarship Submission", "")
             db_data = {
@@ -173,9 +172,6 @@ def whatsapp_webhook(request):
         reply_msg.body(final_text)
         return HttpResponse(str(twilio_resp), content_type='application/xml')
 
-# ==========================================
-# Web Dashboard View
-# ==========================================
 # ==========================================
 # Web Dashboard View
 # ==========================================
@@ -233,52 +229,58 @@ def dashboard_ui(request):
             })
 
     return render(request, 'agent/dashboard.html', {'results': results, 'query': query})
+
 # ==========================================
-# Main API Endpoints
+# Main API Endpoints (UPGRADED FOR MULTI-DOMAIN)
 # ==========================================
 @csrf_exempt
 def api_main_site_search(request):
     """
-    1. Fetches live data from the web.
-    2. Runs the Trust Engine.
-    3. SAVES it to the centralized DB to prevent duplicates.
-    4. Returns ALL saved scholarships for that domain.
+    1. Accepts single or multiple domains (e.g., ?domain=msbte,diploma,engineering).
+    2. Fetches live data from the web for EACH domain.
+    3. Runs the Trust Engine & SAVES it to the DB.
+    4. Returns ALL saved scholarships for ALL requested domains.
     """
-    domain_query = request.GET.get('domain', '') or request.POST.get('domain', '')
-    if not domain_query:
-        return JsonResponse({"error": "Please provide a 'domain' parameter"}, status=400)
-
-    # 1. Search the web for fresh data
-    raw_results = search_web_for_scholarships(domain_query)
+    domain_query_raw = request.GET.get('domain', '') or request.POST.get('domain', '')
     
-    # 2. Process and Save ONLY verified ones to the DB
-    for result in raw_results:
-        score, flags, status = verify_url_authenticity(result['url'], result['title'])
-        metadata = extract_rich_metadata(result['title'], result.get('summary', ''))
-        
-        # We only save scholarships that pass the Trust Engine (Score > 30)
-        if score >= 30:
-            db_data = {
-                "title": result['title'],
-                "url": result['url'],
-                "source": result['source'],
-                "trust_score": score,
-                "status": status,
-                "security_flags": flags,
-                "deadline": metadata['deadline'],
-                "info_paragraph": metadata['info'],
-                "documents_required": metadata['documents_required']
-            }
-            # The magic function handles the duplicate checking!
-            save_scholarship_to_db(domain_query, db_data, added_from="RSS_API")
+    if not domain_query_raw:
+        return JsonResponse({"error": "Please provide a 'domain' parameter (e.g., ?domain=msbte,diploma)"}, status=400)
 
-    # 3. Pull ALL data for this category directly from the database
-    # This guarantees your frontend teammates get the WhatsApp ones too!
-    saved_scholarships = VerifiedScholarship.objects.filter(category__name=domain_query.lower())
+    # 1. Split the comma-separated string into a clean list of domains
+    domains = [d.strip() for d in domain_query_raw.split(',') if d.strip()]
+    
+    # 2. Process each domain separately in the background
+    for domain_query in domains:
+        raw_results = search_web_for_scholarships(domain_query)
+        
+        for result in raw_results:
+            score, flags, status = verify_url_authenticity(result['url'], result['title'])
+            
+            if score >= 30:
+                metadata = extract_rich_metadata(result['title'], result.get('summary', ''))
+                db_data = {
+                    "title": result['title'],
+                    "url": result['url'],
+                    "source": result['source'],
+                    "trust_score": score,
+                    "status": status,
+                    "security_flags": flags,
+                    "deadline": metadata['deadline'],
+                    "info_paragraph": metadata['info'],
+                    "documents_required": metadata['documents_required']
+                }
+                save_scholarship_to_db(domain_query, db_data, added_from="RSS_API")
+
+    # 3. Pull ALL data for ALL requested categories directly from the database
+    lower_domains = [d.lower() for d in domains]
+    
+    # The __in filter acts as a massive OR operator (category=X OR category=Y)
+    saved_scholarships = VerifiedScholarship.objects.filter(category__name__in=lower_domains).order_by('-created_at')
     
     final_output = []
     for sch in saved_scholarships:
         final_output.append({
+            "id": sch.id,
             "title": sch.title,
             "url": sch.url,
             "source": sch.source,
@@ -288,13 +290,63 @@ def api_main_site_search(request):
             "deadline": sch.deadline,
             "info_paragraph": sch.info_paragraph,
             "documents_required": sch.documents_required,
-            "added_from": sch.added_from
+            "added_from": sch.added_from,
+            "category": sch.category.name if sch.category else "general"
         })
 
     return JsonResponse({
-        "student_domain": domain_query,
+        "requested_domains": domains,
         "total_in_database": len(final_output),
         "scholarships": final_output
+    })
+
+@csrf_exempt
+def api_get_saved_scholarships(request):
+    """
+    FAST READ-ONLY API for the frontend.
+    Now supports multiple categories: ?category=engineering,medical
+    """
+    category_query_raw = request.GET.get('category', '').lower().strip()
+    source_query = request.GET.get('source', '').strip()
+
+    # 1. Start by grabbing EVERYTHING, sorted by newest first
+    scholarships = VerifiedScholarship.objects.all().order_by('-created_at')
+
+    # 2. If the frontend asked for specific categories, filter them
+    if category_query_raw:
+        categories = [c.strip() for c in category_query_raw.split(',') if c.strip()]
+        scholarships = scholarships.filter(category__name__in=categories)
+        
+    # 3. If the frontend wants only WhatsApp ones, filter by source
+    if source_query:
+        scholarships = scholarships.filter(added_from__icontains=source_query)
+
+    # 4. Package it into clean JSON
+    final_output = []
+    for sch in scholarships:
+        final_output.append({
+            "id": sch.id,
+            "title": sch.title,
+            "url": sch.url,
+            "source": sch.source,
+            "trust_score": sch.trust_score,
+            "status": sch.status,
+            "security_flags": sch.security_flags,
+            "deadline": sch.deadline,
+            "info_paragraph": sch.info_paragraph,
+            "documents_required": sch.documents_required,
+            "added_from": sch.added_from,
+            "category": sch.category.name if sch.category else "general",
+            "date_added": sch.created_at.strftime("%b %d, %Y")
+        })
+
+    return JsonResponse({
+        "total_results": len(final_output),
+        "active_filters": {
+            "categories": category_query_raw.split(',') if category_query_raw else ["All"],
+            "source": source_query or "All"
+        },
+        "data": final_output
     })
 
 def api_scan_endpoint(request):
@@ -347,52 +399,3 @@ def search_and_verify(request):
 
 def get_verified_scholarships(request):
     return JsonResponse({"status": "deprecated"})
-
-@csrf_exempt
-def api_get_saved_scholarships(request):
-    """
-    FAST READ-ONLY API for the frontend.
-    Fetches verified scholarships directly from the database in milliseconds.
-    """
-    # Grab optional filters from the URL
-    category_query = request.GET.get('category', '').lower().strip()
-    source_query = request.GET.get('source', '').strip()
-
-    # 1. Start by grabbing EVERYTHING, sorted by newest first
-    scholarships = VerifiedScholarship.objects.all().order_by('-created_at')
-
-    # 2. If the frontend asked for a specific category, filter it
-    if category_query:
-        scholarships = scholarships.filter(category__name=category_query)
-        
-    # 3. If the frontend wants only WhatsApp ones, filter by source
-    if source_query:
-        scholarships = scholarships.filter(added_from__icontains=source_query)
-
-    # 4. Package it into clean JSON
-    final_output = []
-    for sch in scholarships:
-        final_output.append({
-            "id": sch.id,
-            "title": sch.title,
-            "url": sch.url,
-            "source": sch.source,
-            "trust_score": sch.trust_score,
-            "status": sch.status,
-            "security_flags": sch.security_flags,
-            "deadline": sch.deadline,
-            "info_paragraph": sch.info_paragraph,
-            "documents_required": sch.documents_required,
-            "added_from": sch.added_from,
-            "category": sch.category.name if sch.category else "general",
-            "date_added": sch.created_at.strftime("%b %d, %Y") # Formatted nicely for UI
-        })
-
-    return JsonResponse({
-        "total_results": len(final_output),
-        "active_filters": {
-            "category": category_query or "None",
-            "source": source_query or "None"
-        },
-        "data": final_output
-    })
