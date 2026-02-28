@@ -123,11 +123,12 @@ def whatsapp_webhook(request):
                 return HttpResponse(str(twilio_resp), content_type='application/xml')
 
         # --- RUN THE TRUST ENGINE ON THE EXTRACTED URL ---
+        # --- RUN THE TRUST ENGINE ON THE EXTRACTED URL ---
         score, flags, status = verify_url_authenticity(target_url, title="WhatsApp Submission")
         flags_text = "\n- " + "\n- ".join(flags) if flags else "\n- None detected"
         
-        # 🚨 DB SAVING LOGIC 🚨
-        if score > 60:
+        # 🚨 UPGRADED DB SAVING LOGIC 🚨
+        if score >= 60:  # Changed to >= 60 so your 60/100 link passes!
             # It's a verified link! Extract details and save it to the DB
             metadata = extract_rich_metadata("WhatsApp Scholarship Submission", "")
             db_data = {
@@ -141,14 +142,22 @@ def whatsapp_webhook(request):
                 "info_paragraph": "This scholarship was crowdsourced and verified via the AUTHIC WhatsApp Agent.",
                 "documents_required": metadata['documents_required']
             }
-            # Save it under a general 'community' category
-            save_scholarship_to_db("community_forwarded", db_data, added_from="WhatsApp")
+            
+            # save_scholarship_to_db returns True if it's new, False if it already exists!
+            is_new = save_scholarship_to_db("community_forwarded", db_data, added_from="WhatsApp")
+
+            # Customize the WhatsApp message based on the database response
+            if is_new:
+                db_message = "💾 *Saved to ScholarMatch Database!*"
+            else:
+                db_message = "🔄 *Already on Portal! (Record Updated)*"
 
             final_text = (f"✅ *VERIFIED SCHOLARSHIP*\n\n"
                           f"🔗 *Detected URL:* {target_url}\n"
                           f"🛡️ *Trust Score:* {score}/100\n"
                           f"📊 *Status:* Safe to Apply\n"
-                          f"💾 *Saved to ScholarMatch Database!*\n\n*Scan Results:*{flags_text}")
+                          f"{db_message}\n\n*Scan Results:*{flags_text}")
+                          
         elif score < 30:
             final_text = (f"🚨 *SCAM DETECTED* 🚨\n\n"
                           f"🔗 *Detected URL:* {target_url}\n"
