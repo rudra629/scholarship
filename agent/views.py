@@ -347,3 +347,52 @@ def search_and_verify(request):
 
 def get_verified_scholarships(request):
     return JsonResponse({"status": "deprecated"})
+
+@csrf_exempt
+def api_get_saved_scholarships(request):
+    """
+    FAST READ-ONLY API for the frontend.
+    Fetches verified scholarships directly from the database in milliseconds.
+    """
+    # Grab optional filters from the URL
+    category_query = request.GET.get('category', '').lower().strip()
+    source_query = request.GET.get('source', '').strip()
+
+    # 1. Start by grabbing EVERYTHING, sorted by newest first
+    scholarships = VerifiedScholarship.objects.all().order_by('-created_at')
+
+    # 2. If the frontend asked for a specific category, filter it
+    if category_query:
+        scholarships = scholarships.filter(category__name=category_query)
+        
+    # 3. If the frontend wants only WhatsApp ones, filter by source
+    if source_query:
+        scholarships = scholarships.filter(added_from__icontains=source_query)
+
+    # 4. Package it into clean JSON
+    final_output = []
+    for sch in scholarships:
+        final_output.append({
+            "id": sch.id,
+            "title": sch.title,
+            "url": sch.url,
+            "source": sch.source,
+            "trust_score": sch.trust_score,
+            "status": sch.status,
+            "security_flags": sch.security_flags,
+            "deadline": sch.deadline,
+            "info_paragraph": sch.info_paragraph,
+            "documents_required": sch.documents_required,
+            "added_from": sch.added_from,
+            "category": sch.category.name if sch.category else "general",
+            "date_added": sch.created_at.strftime("%b %d, %Y") # Formatted nicely for UI
+        })
+
+    return JsonResponse({
+        "total_results": len(final_output),
+        "active_filters": {
+            "category": category_query or "None",
+            "source": source_query or "None"
+        },
+        "data": final_output
+    })

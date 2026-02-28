@@ -10,4 +10,5 @@ urlpatterns = [
     path('api/list/', views.get_verified_scholarships, name="api_list"),
     path('api/whatsapp/', views.whatsapp_webhook, name='whatsapp_webhook'),
     path('api/main-search/', views.api_main_site_search, name='api_main_site_search'),
+    path('api/saved-scholarships/', views.api_get_saved_scholarships, name='api_get_saved_scholarships'),
 ]
