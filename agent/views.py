@@ -40,20 +40,29 @@ else:
 def extract_url_with_gemini(media_url, mime_type):
     """Downloads Twilio media, passes it to Gemini Vision, and extracts the URL."""
     try:
-        # 1. Download the image/PDF from Twilio
-        # Add the 'auth' parameter to log in to Twilio!
-        response = requests.get(media_url, auth=(twilio_sid, twilio_token))
-        if response.status_code != 200:
-            return f"ERROR: Twilio blocked the image download (Status {response.status_code})"
+        # 1. Grab credentials directly inside the function
+        twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+        twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
         
-        # 2. Save it to a temporary file
+        # DEBUG CHECK: Are the keys actually loaded?
+        if not twilio_sid or not twilio_token:
+            return "ERROR: Server cannot find TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN! Check your .env or Render dashboard."
+
+        # 2. Download the image/PDF from Twilio
+        response = requests.get(media_url, auth=(twilio_sid, twilio_token))
+        
+        if response.status_code != 200:
+            # Tell us exactly what Twilio is complaining about
+            return f"ERROR: Twilio blocked the image download (Status {response.status_code}). Auth attempted with SID ending in: ...{twilio_sid[-4:]}"
+        
+        # 3. Save it to a temporary file
         ext = '.pdf' if 'pdf' in mime_type else '.jpg'
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
             temp_file.write(response.content)
             temp_path = temp_file.name
 
         try:
-            # 3. Upload to Gemini and ask for the URL
+            # 4. Upload to Gemini and ask for the URL
             sample_file = genai.upload_file(path=temp_path)
             model = genai.GenerativeModel(model_name="gemini-1.5-flash")
             
@@ -69,7 +78,6 @@ def extract_url_with_gemini(media_url, mime_type):
         return extracted_text
     except Exception as e:
         return f"ERROR: System crashed -> {str(e)}"
-
 # ==========================================
 # WhatsApp Webhook View
 # ==========================================
