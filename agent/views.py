@@ -1,67 +1,76 @@
 # agent/views.py
-from django.shortcuts import render
-from django.http import JsonResponse
-import urllib.parse
-from .utils import search_web_for_scholarships, verify_url_authenticity, extract_details
-from django.views.decorators.csrf import csrf_exempt
-from django.http import HttpResponse
-from twilio.twiml.messaging_response import MessagingResponse
-from .utils import search_web_for_scholarships, verify_url_authenticity, extract_rich_metadata
-
-from dotenv import load_dotenv
 import os
 import re
 import tempfile
+import urllib.parse
 import requests
 import google.generativeai as genai
 
-# Configure Gemini API
+from django.shortcuts import render
+from django.http import JsonResponse, HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+
+from twilio.twiml.messaging_response import MessagingResponse
+from dotenv import load_dotenv
+
+from .utils import (
+    search_web_for_scholarships, 
+    verify_url_authenticity, 
+    extract_details, 
+    extract_rich_metadata
+)
+
 # ==========================================
-# IMPORTANT: Put your actual Gemini API key here, or use os.getenv("GEMINI_API_KEY")
+# Configure Gemini API Securely
+# ==========================================
 load_dotenv()
 
-# 2. Grab the key securely
+# Grab the key securely from the .env file (or Render Environment Variables)
 gemini_key = os.getenv("GEMINI_API_KEY")
 
-# 3. Configure the AI
 if gemini_key:
     genai.configure(api_key=gemini_key)
 else:
-    print("⚠️ WARNING: GEMINI_API_KEY is missing from your .env file!")
+    print("⚠️ WARNING: GEMINI_API_KEY is missing from your .env file or Render Dashboard!")
 
+# ==========================================
+# AI Helper Functions
+# ==========================================
 def extract_url_with_gemini(media_url, mime_type):
     """Downloads Twilio media, passes it to Gemini Vision, and extracts the URL."""
     try:
         # 1. Download the image/PDF from Twilio
         response = requests.get(media_url)
+        if response.status_code != 200:
+            return f"ERROR: Twilio blocked the image download (Status {response.status_code})"
         
-        # 2. Save it to a temporary file based on its type
+        # 2. Save it to a temporary file
         ext = '.pdf' if 'pdf' in mime_type else '.jpg'
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
             temp_file.write(response.content)
             temp_path = temp_file.name
 
-        # 3. Upload to Gemini and ask for the URL
-        sample_file = genai.upload_file(path=temp_path)
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
-        
-        prompt = (
-            "You are a scholarship link extractor. Look at this image or document. "
-            "Find the website link (URL) where students can apply. "
-            "Reply ONLY with the raw URL starting with http:// or https://. "
-            "If there is no URL, reply exactly with 'NO_URL'."
-        )
-        
-        result = model.generate_content([sample_file, prompt])
-        extracted_text = result.text.strip()
-        
-        # 4. Clean up the temp file from your server
-        os.remove(temp_path)
-        
+        try:
+            # 3. Upload to Gemini and ask for the URL
+            sample_file = genai.upload_file(path=temp_path)
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            
+            prompt = "Extract the website link (URL) from this image. Reply ONLY with the raw URL starting with http:// or https://."
+            result = model.generate_content([sample_file, prompt])
+            extracted_text = result.text.strip()
+        except Exception as ai_error:
+            extracted_text = f"ERROR: Gemini API failed -> {str(ai_error)}"
+        finally:
+            # Clean up the temp file
+            os.remove(temp_path)
+            
         return extracted_text
     except Exception as e:
-        print(f"Gemini Extraction Error: {e}")
-        return "NO_URL"
+        return f"ERROR: System crashed -> {str(e)}"
+
+# ==========================================
+# WhatsApp Webhook View
+# ==========================================
 @csrf_exempt
 def whatsapp_webhook(request):
     """
@@ -85,6 +94,11 @@ def whatsapp_webhook(request):
             # Extract text using Gemini
             extracted_text = extract_url_with_gemini(media_url, mime_type)
             
+            # Debug Catch: If extraction failed, send the error to WhatsApp so you can fix it
+            if extracted_text.startswith("ERROR"):
+                reply_msg.body(f"🛠️ *DEBUG MODE*\n{extracted_text}")
+                return HttpResponse(str(twilio_resp), content_type='application/xml')
+
             # Use regex to perfectly grab the link out of the AI's response
             url_match = re.search(r'(https?://[^\s]+)', extracted_text)
             
@@ -126,6 +140,10 @@ def whatsapp_webhook(request):
 
         reply_msg.body(final_text)
         return HttpResponse(str(twilio_resp), content_type='application/xml')
+
+# ==========================================
+# Web Dashboard View
+# ==========================================
 def dashboard_ui(request):
     """
     Handles the initial page load AND the search results for the Web UI.
@@ -172,64 +190,18 @@ def dashboard_ui(request):
 
     return render(request, 'agent/dashboard.html', {'results': results, 'query': query})
 
-def api_scan_endpoint(request):
-    query = request.GET.get('q', '')
-    if not query:
-        return JsonResponse({"error": "Please provide a query parameter (e.g., ?q=msbte)"}, status=400)
-
-    raw_results = search_web_for_scholarships(query)
-    processed_results = []
-    for result in raw_results:
-        score, flags, status = verify_url_authenticity(result['url'], result['title'])
-        result['trust_score'] = score
-        result['flags'] = flags
-        result['status'] = status
-        processed_results.append(result)
-
-    return JsonResponse({
-        "target_query": query,
-        "results_found": len(processed_results),
-        "data": processed_results
-    })
-
-def api_verify_url(request):
-    encoded_url = request.GET.get('url', '')
-    if not encoded_url:
-        return JsonResponse({"error": "Please provide a url parameter"}, status=400)
-
-    target_url = urllib.parse.unquote(encoded_url)
-    score, flags, status = verify_url_authenticity(target_url, title="WhatsApp Submission")
-    
-    is_safe = True if score > 60 else False
-    is_scam = True if score < 30 else False
-
-    return JsonResponse({
-        "analyzed_url": target_url,
-        "trust_score": score,
-        "status": status,
-        "is_safe": is_safe,
-        "is_scam": is_scam,
-        "flags_detected": flags
-    })
-def search_and_verify(request):
-    """Legacy route placeholder to prevent urls.py from crashing"""
-    from django.http import JsonResponse
-    return JsonResponse({"status": "deprecated, use /api/scan/ instead"})
-
-def get_verified_scholarships(request):
-    """Legacy route placeholder to prevent urls.py from crashing"""
-    from django.http import JsonResponse
-    return JsonResponse({"status": "deprecated"})
-# Make sure to import this at the top of views.py!
-# from .utils import search_web_for_scholarships, verify_url_authenticity, extract_rich_metadata
-
+# ==========================================
+# Main API Endpoints
+# ==========================================
+@csrf_exempt
 def api_main_site_search(request):
     """
     Main ScholarMatch API: Takes a domain/course query, runs the AUTHIC security scan,
     and returns rich data (Paragraph Info, Deadlines, Documents, Trust Score).
     Usage: /api/main-search/?domain=medical
     """
-    domain_query = request.GET.get('domain', '')
+    # Supports both GET and POST requests gracefully
+    domain_query = request.GET.get('domain', '') or request.POST.get('domain', '')
     
     if not domain_query:
         return JsonResponse({"error": "Please provide a 'domain' parameter (e.g., ?domain=medical)"}, status=400)
@@ -265,3 +237,57 @@ def api_main_site_search(request):
         "total_found": len(final_results),
         "scholarships": final_results
     })
+
+def api_scan_endpoint(request):
+    """Basic JSON response for the Trust Engine."""
+    query = request.GET.get('q', '')
+    if not query:
+        return JsonResponse({"error": "Please provide a query parameter (e.g., ?q=msbte)"}, status=400)
+
+    raw_results = search_web_for_scholarships(query)
+    processed_results = []
+    for result in raw_results:
+        score, flags, status = verify_url_authenticity(result['url'], result['title'])
+        result['trust_score'] = score
+        result['flags'] = flags
+        result['status'] = status
+        processed_results.append(result)
+
+    return JsonResponse({
+        "target_query": query,
+        "results_found": len(processed_results),
+        "data": processed_results
+    })
+
+def api_verify_url(request):
+    """WhatsApp verification bridge API."""
+    encoded_url = request.GET.get('url', '')
+    if not encoded_url:
+        return JsonResponse({"error": "Please provide a url parameter"}, status=400)
+
+    target_url = urllib.parse.unquote(encoded_url)
+    score, flags, status = verify_url_authenticity(target_url, title="WhatsApp Submission")
+    
+    is_safe = True if score > 60 else False
+    is_scam = True if score < 30 else False
+
+    return JsonResponse({
+        "analyzed_url": target_url,
+        "trust_score": score,
+        "status": status,
+        "is_safe": is_safe,
+        "is_scam": is_scam,
+        "flags_detected": flags
+    })
+
+# ==========================================
+# Legacy Route Placeholders 
+# (Kept to prevent urls.py from crashing)
+# ==========================================
+def search_and_verify(request):
+    """Legacy route placeholder to prevent urls.py from crashing"""
+    return JsonResponse({"status": "deprecated, use /api/scan/ instead"})
+
+def get_verified_scholarships(request):
+    """Legacy route placeholder to prevent urls.py from crashing"""
+    return JsonResponse({"status": "deprecated"})
