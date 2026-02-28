@@ -24,7 +24,8 @@ from .utils import (
 # Configure Gemini API Securely
 # ==========================================
 load_dotenv()
-
+twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
 # Grab the key securely from the .env file (or Render Environment Variables)
 gemini_key = os.getenv("GEMINI_API_KEY")
 
@@ -40,7 +41,8 @@ def extract_url_with_gemini(media_url, mime_type):
     """Downloads Twilio media, passes it to Gemini Vision, and extracts the URL."""
     try:
         # 1. Download the image/PDF from Twilio
-        response = requests.get(media_url)
+        # Add the 'auth' parameter to log in to Twilio!
+        response = requests.get(media_url, auth=(twilio_sid, twilio_token))
         if response.status_code != 200:
             return f"ERROR: Twilio blocked the image download (Status {response.status_code})"
         
