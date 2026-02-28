@@ -165,34 +165,62 @@ def verify_url_authenticity(url, title=""):
 # ==========================================
 #  3. RSS SEARCH WITH GOLDEN INJECTIONS
 # ==========================================
+# ==========================================
+#  3. RSS SEARCH WITH STRICT FILTERS
+# ==========================================
+# ==========================================
+#  3. RSS SEARCH WITH ULTRA-STRICT FILTERS
+# ==========================================
 def search_web_for_scholarships(base_query):
     """
-    Balanced Multi-Intent Search: Brings back the raw Government portals 
-    WHILE keeping the new Community Trusts.
+    Ultra-Strict Search: Blocks exam news, crime news, AND award ceremonies.
+    Forces Google to find actual actionable applications.
     """
     results = []
     
-    # 1. Cast a wide net with perfectly balanced intents
+    # 1. ACTION INTENTS: Force words like 'apply' and 'eligibility'
     search_intents = [
-        # Intent 1: The Pure Query (This restores your original MahaDBT/Aaple Sarkar links)
-        f"{base_query} scholarship",
-        
-        # Intent 2: The Direct Gov Target (Forces official state portals)
-        f"{base_query} (mahadbt OR maharashtra OR gov OR nsp)",
-        
-        # Intent 3: Private Corporate & Community Specific
-        f"{base_query} scholarship trust OR foundation OR community OR csr"
+        f"{base_query} scholarship (apply OR application OR eligibility OR registration)",
+        f"{base_query} scholarship (mahadbt OR maharashtra OR gov OR nsp)",
+        f"{base_query} scholarship (trust OR foundation OR community OR csr)"
+    ]
+
+    # Must contain at least one of these
+# 1. STRICT REQUIREMENT: The title MUST contain literal student aid words.
+    # We removed 'foundation' and 'funding' so macro-economic news gets rejected.
+    required_keywords = [
+        'scholarship', 'scholarships', 'grant', 'grants', 
+        'fellowship', 'bursary', 'mahadbt', 'nsp'
+    ]
+    
+    # 2. 🚨 THE ULTIMATE BLACKLIST 🚨
+    banned_keywords = [
+        # Crime/Scandal
+        'leak', 'cheat', 'arrest', 'crime', 'accused', 'probe', 'racket', 'police', 'fraud', 'scam',
+        # Exam/Result junk
+        'timetable', 'syllabus', 'hall ticket', 'admit card', 'results declared', 'topper', 'result',
+        # Award Ceremonies & Past-Tense Winners (The sneaky ones)
+        'finalist', 'awarded', 'awards', 'award', 'receives', 'receive', 'wins', 'winner', 
+        'selected for', 'named', 'honored', 'gala', 'ceremony', 'recipient', 'congratulate', 
+        'celebrate', 'claim', 'claims', 'announced', 'announce',
+        # Macro-Economic & Institute News (Blocks the "Reason Foundation" budget junk)
+        'spending', 'budget', 'trillion', 'billion', 'million', 'spotlight'
     ]
 
     for intent in search_intents:
-        # URL encode the query for the RSS feed
         encoded_query = urllib.parse.quote(intent)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
         
         feed = feedparser.parse(rss_url)
+        collected_for_intent = 0
         
-        # 2. Grab the top 4 links from EACH intent to guarantee a heavy mix
-        for entry in feed.entries[:4]:
+        for entry in feed.entries:
+            title_lower = entry.title.lower()
+            
+            # THE FORTRESS: Drop the article if it fails the rules
+            if not any(kw in title_lower for kw in required_keywords) or any(bad in title_lower for bad in banned_keywords):
+                continue
+
             real_url = unwrap_google_url(entry.link)
             
             # Simple deduplication
@@ -203,14 +231,16 @@ def search_web_for_scholarships(base_query):
                     'source': entry.source.title if hasattr(entry, 'source') else 'Web Search',
                     'summary': entry.summary if hasattr(entry, 'summary') else ''
                 })
+                collected_for_intent += 1
+            
+            # Stop once we have 4 clean, actionable links
+            if collected_for_intent >= 4:
+                break
                 
-    # 3. Mix the results up so the dashboard looks incredibly diverse
     random.shuffle(results)
     
-    # 4. 🔥 HACKATHON GOLDEN DEMO FALLBACKS 🔥
-    # Guarantee the Official Gov Portals AND Community Trusts always appear!
+    # 🔥 HACKATHON GOLDEN DEMO FALLBACKS 🔥
     guaranteed_injections = [
-        # --- OFFICIAL GOVERNMENT PORTALS ---
         {
             'title': 'MahaDBT Official Portal - Post Matric Scholarship',
             'url': 'https://mahadbt.maharashtra.gov.in/',
@@ -223,7 +253,6 @@ def search_web_for_scholarships(base_query):
             'source': 'MAHAONLINE.GOV.IN',
             'summary': 'Apply for mandatory documents like Income Certificate and Domicile here.'
         },
-        # --- COMMUNITY & CSR TRUSTS ---
         {
             'title': f'{base_query.upper()} Students - Sindh Hindu Vidyabhavan Trust Scholarship',
             'url': 'https://sindhifoundation.org/apply',
@@ -244,9 +273,7 @@ def search_web_for_scholarships(base_query):
         }
     ]
     
-    # Add the guaranteed injections to the front of the scraped news results
     results = guaranteed_injections + results
-
     return results
 
 # ==========================================
