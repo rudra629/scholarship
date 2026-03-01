@@ -147,7 +147,7 @@ def whatsapp_webhook(request):
 
             # Customize the WhatsApp message based on the database response
             if is_new:
-                db_message = "💾 *Saved to ScholarMatch Database!*\n⭐*50 Karma points* added to your Scholar Match Account.\nUse karma points to get vouchers and cash!"
+                db_message = "💾 *Saved to ScholarMatch Database!*\n⭐*50 Karma points* added to your ScholarMatch Account.\n-Use karma points to get vouchers and cash!"
             else:
                 db_message = "🔄 *Already on Portal! (Record Updated)*"
 
